@@ -1,21 +1,60 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build on OpenBSD
+        uses: vmactions/openbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg_add -I gmake
+          run: |
+            cd ${{ github.workspace }}
+            ls -la
+            gmake
+            file exec
+            ./exec --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exec-binary
+          path: exec
+
   release:
-    needs: build-openbsd
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: exec-openbsd-amd64
+          name: exec-binary
           path: ./dist
 
-      - name: Create/Update Continuous Release
+      - name: Release to GitHub
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: continuous
-          name: "Continuous Build"
-          body: "Auto-built from ${{ github.sha }}"
+          tag_name: build-${{ github.run_number }}-${{ github.sha }}
+          name: "Build ${{ github.run_number }} (${{ github.sha }})"
+          body: |
+            Auto-built from commit `${{ github.sha }}`
+            Branch: `${{ github.ref_name }}`
+            Workflow Run: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           files: ./dist/exec
           draft: false
-          prerelease: true
+          prerelease: false
+          make_latest: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

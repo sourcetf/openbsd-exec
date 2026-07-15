@@ -1,44 +1,6 @@
-name: Build and Release
-
-on:
-  push:
-    branches: [main, master]
-    tags: ['v*.*.*', 'v*']
-  pull_request:
-    branches: [main, master]
-
-permissions:
-  contents: write    # 全局声明，确保 GITHUB_TOKEN 有写权限
-
-jobs:
-  build-openbsd:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build on OpenBSD
-        uses: vmactions/openbsd-vm@v1
-        with:
-          usesh: true
-          prepare: |
-            pkg_add -I gmake
-          run: |
-            cd ${{ github.workspace }}
-            gmake
-            file exec
-            ./exec --version
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: exec-openbsd-amd64
-          path: exec
-
   release:
     needs: build-openbsd
     runs-on: ubuntu-latest
-    # 只在 tag 时发 Release
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -46,12 +8,14 @@ jobs:
           name: exec-openbsd-amd64
           path: ./dist
 
-      - name: Create Release
+      - name: Create/Update Continuous Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: continuous
+          name: "Continuous Build"
+          body: "Auto-built from ${{ github.sha }}"
           files: ./dist/exec
-          generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

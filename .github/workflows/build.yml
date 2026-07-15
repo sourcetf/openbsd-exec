@@ -20,9 +20,9 @@ jobs:
           prepare: |
             pkg_add -I gmake
           run: |
-            gmake clean
+            cd ${{ github.workspace }}
+            ls -la
             gmake
-            
             file exec
             ./exec --version
 

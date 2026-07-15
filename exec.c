@@ -815,15 +815,29 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	 * Use execlp("cc", ...) which searches PATH for the compiler.
 	 * The caller is responsible for ensuring PATH is trusted.
 	 */
+	/*
+	 * Compile to a temporary output file first, then atomically rename.
+	 * This eliminates the TOCTOU window between access() and creation.
+	 */
+	char out_tmp[4096];
+	snprintf(out_tmp, sizeof(out_tmp), "%s.out.XXXXXX", starter_name);
+	int out_fd = mkstemp(out_tmp);
+	if (out_fd == -1) {
+		unlink(src_path);
+		err(1, "mkstemp for output file");
+	}
+	close(out_fd);
+	
 	pid_t pid = fork();
 	if (pid == -1) {
 		unlink(src_path);
+		unlink(out_tmp);
 		err(1, "fork");
 	}
 	if (pid == 0) {
 		execlp("cc", "cc", "-O2", "-fstack-protector-strong", "-D_FORTIFY_SOURCE=2",
 		    "-fPIE", "-pie", "-Wl,-z,relro", "-Wl,-z,now",
-		    "-x", "c", "-o", starter_name, src_path,
+		    "-x", "c", "-o", out_tmp, src_path,
 		    "-Wall", "-Wextra", (char *)NULL);
 		err(1, "execlp cc");
 	}
@@ -833,17 +847,24 @@ make_starter(const char *starter_name, const char *pledges_raw,
 			if (errno == EINTR)
 				continue;
 			unlink(src_path);
+			unlink(out_tmp);
 			err(1, "waitpid");
 		}
 		break;
 	}
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		unlink(src_path);
+		unlink(out_tmp);
 		errx(1, "compilation of %s failed (cc exited %d)", starter_name,
 		    WIFEXITED(status) ? WEXITSTATUS(status) : -1);
 	}
 
 	unlink(src_path);
+	if (rename(out_tmp, starter_name) == -1) {
+		unlink(out_tmp);
+		err(1, "rename %s to %s", out_tmp, starter_name);
+	}
+
 	printf("Starter created: ./%s\n", starter_name);
 }
 
@@ -948,17 +969,17 @@ enable_raw_mode(void)
 static int
 read_key(void)
 {
-	char c;
+	unsigned char c;   // ← 改为 unsigned，范围 0–255
 	int nread;
 	while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
 		if (nread == 0)
 			return KEY_EOF;
 		if (nread == -1 && errno == EAGAIN) {
-			usleep(10000);	/* 10ms back-off */
+			usleep(10000);
 			continue;
 		}
 		if (nread == -1 && errno == EINTR) {
-			continue;	/* SA_RESTART should prevent this, but be safe */
+			continue;
 		}
 		if (nread == -1)
 			err(1, "read");
@@ -1038,7 +1059,7 @@ read_key(void)
 		}
 		return KEY_ESC;
 	}
-	return c;
+	return (int)c;
 }
 
 static void

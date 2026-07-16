@@ -57,174 +57,170 @@ usage(const char *prog)
 			base = "exec";
 	}
 
-	fprintf(stderr, "Usage: ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " pledge1,pledge2,... /unveil-dir1[:perms],... [--] command [args...]\n");
-	fprintf(stderr, "       ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " pledge1,pledge2,... /unveil-dir1[:perms],...   (uses EXEC_CMD env or /bin/sh)\n");
-	fprintf(stderr, "       ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " --make-starter starter_name pledges unveil [--] command [args...]\n");
-	fprintf(stderr, "         (creates a self-contained starter binary with fixed args)\n");
-	fprintf(stderr, "       ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " --menuconfig\n");
-	fprintf(stderr, "         (interactive TUI to configure and run)\n");
-	fprintf(stderr, "       ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " --version\n");
-	fprintf(stderr, "         (show version information)\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "Available pledges and their purposes:\n");
-	fprintf(stderr, "  stdio      Basic I/O, memory, timers, pipes, socketpair.\n");
-	fprintf(stderr, "             Most programs need this. Includes read/write/\n");
-	fprintf(stderr, "             mmap/close/dup/pipe/poll/select/sigaction etc.\n");
-	fprintf(stderr, "  rpath      Read paths, stat files, open read-only.\n");
-	fprintf(stderr, "  wpath      Write paths, open for writing.\n");
-	fprintf(stderr, "  cpath      Create and delete files/directories.\n");
-	fprintf(stderr, "  dpath      Create special files (mkfifo, mknod).\n");
-	fprintf(stderr, "  inet       TCP/IPv4 and IPv6 sockets (web servers, clients).\n");
-	fprintf(stderr, "  mcast      Multicast socket options (requires inet).\n");
-	fprintf(stderr, "  unix       UNIX domain sockets.\n");
-	fprintf(stderr, "  dns        DNS resolution (reads /etc/resolv.conf, /etc/hosts).\n");
-	fprintf(stderr, "  fattr      Change file attributes (chmod, chflags, utimes).\n");
-	fprintf(stderr, "  chown      Change file ownership.\n");
-	fprintf(stderr, "  flock      File locking (fcntl, flock, lockf).\n");
-	fprintf(stderr, "  getpw      Read user/group databases (/etc/passwd, /etc/group).\n");
-	fprintf(stderr, "  sendfd     Send file descriptors via sendmsg(2).\n");
-	fprintf(stderr, "  recvfd     Receive file descriptors via recvmsg(2).\n");
-	fprintf(stderr, "  tape       Tape drive ioctl operations.\n");
-	fprintf(stderr, "  tty        Terminal device operations (/dev/tty, TTY ioctls).\n");
-	fprintf(stderr, "  proc       Process creation (fork, vfork, kill, setpriority).\n");
-	fprintf(stderr, "  exec       Execute programs (execve). Needs proc for fork+exec.\n");
-	fprintf(stderr, "  prot_exec  Executable memory mappings (PROT_EXEC).\n");
-	fprintf(stderr, "  settime    Set system time (settimeofday, adjtime).\n");
-	fprintf(stderr, "  ps         Inspect other processes (sysctl for ps(1)).\n");
-	fprintf(stderr, "  vminfo     Inspect virtual memory (sysctl for top, vmstat).\n");
-	fprintf(stderr, "  id         Change process identity (setuid, setgid, setgroups).\n");
-	fprintf(stderr, "  pf         Packet Filter (pf) ioctl operations.\n");
-	fprintf(stderr, "  route      Read routing table.\n");
-	fprintf(stderr, "  wroute     Modify routing table.\n");
-	fprintf(stderr, "  audio      Audio device ioctl operations.\n");
-	fprintf(stderr, "  video      Video (V4L) device ioctl operations.\n");
-	fprintf(stderr, "  bpf        BPF device statistics.\n");
-	fprintf(stderr, "  disklabel  Disk label ioctl operations.\n");
-	fprintf(stderr, "  drm        DRM device ioctl operations.\n");
-	fprintf(stderr, "  vmm        VMM (hypervisor) ioctl operations.\n");
-	fprintf(stderr, "  unveil     Allow calling unveil(2). REQUIRED if unveil dirs given.\n");
-	fprintf(stderr, "  error      Return ENOSYS on violations instead of SIGABRT.\n");
-	fprintf(stderr, "             Useful for debugging pledge requirements.\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "Unveil permissions (default: rwxc):\n");
-	fprintf(stderr, "  r          Read access\n");
-	fprintf(stderr, "  w          Write access\n");
-	fprintf(stderr, "  x          Execute access\n");
-	fprintf(stderr, "  c          Create and delete\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "Unveil path quoting:\n");
-	fprintf(stderr, "  If a path contains ':' use double quotes around it.\n");
-	fprintf(stderr, "  Use \\X to escape any character X inside quoted paths.\n");
-	fprintf(stderr, "  Example: \"/tmp/my\\\"dir\":rwc,/other/dir:rx\n");
-	fprintf(stderr, "  Empty unveil list (\"\") means pledge-only, no unveil.\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "Common usage examples:\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Static web server (e.g., darkhttpd, nginx static)\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,inet /var/www/htdocs:r -- ./darkhttpd /var/www/htdocs\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # CGI/FastCGI web server (needs child process support)\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,wpath,cpath,inet,proc,exec,unveil \\\n");
-	fprintf(stderr, "      /var/www/htdocs:r,/var/tmp:rwc,/usr/local/bin:rx -- ./nginx\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Reverse proxy / load balancer\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,inet,unix,dns /etc:r -- ./relayd\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # File server (read-only)\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,inet /srv/files:r -- ./ftpd\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Log writer / log aggregator\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,wpath,cpath /var/log:rwc -- ./mylogger\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # DNS client resolver (e.g., drill, dig)\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,inet,dns /etc:r -- /usr/bin/drill\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Shell script runner (minimal)\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,exec /bin:rx,/usr/bin:rx -- /bin/sh script.sh\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Database server (e.g., SQLite, PostgreSQL)\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,wpath,cpath,inet /var/db:rwc -- ./postgres\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Mail server (SMTP, e.g., OpenSMTPD)\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,wpath,cpath,inet,dns,getpw \\\n");
-	fprintf(stderr, "      /var/mail:rwc,/etc:r -- /usr/sbin/smtpd\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # SSH server (OpenSSH, very restricted)\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,wpath,cpath,inet,unix,getpw,proc,exec,tty \\\n");
-	fprintf(stderr, "      /etc:r,/var/empty:r,/usr/bin:rx -- /usr/sbin/sshd\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Path with colon, using quotes\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,wpath \\\n");
-	fprintf(stderr, "      \"/tmp/my:dir\":rwc,/var/log:rwc -- ./myapp\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Path with literal quote, using escape\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath \\\n");
-	fprintf(stderr, "      \"/tmp/my\\\"dir\":rwc -- ./myapp\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Create a self-contained starter binary\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " --make-starter webd stdio,rpath,inet /var/www/htdocs:r -- ./darkhttpd /var/www/htdocs\n");
-	fprintf(stderr, "  # Then run: ./webd\n");
-	fprintf(stderr, "  # And:      ./webd --help   (shows creation parameters)\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Interactive configuration\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " --menuconfig\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Pledge only, no unveil (pass empty string)\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,inet \"\" -- ./myapp\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "  # Debug mode: find missing pledges without crashing\n");
-	fprintf(stderr, "  ");
-	fprintf(stderr, "%s", base);
-	fprintf(stderr, " stdio,rpath,error /var/www:r -- ./myserver\n");
-	fprintf(stderr, "\n");
-	fprintf(stderr, "Notes:\n");
-	fprintf(stderr, "  - The 'unveil' promise is auto-added if unveil dirs are specified.\n");
-	fprintf(stderr, "  - Use 'error' pledge to debug: violations return ENOSYS not SIGABRT.\n");
-	fprintf(stderr, "  - Check /var/log/messages for pledge violations when using 'error'.\n");
-	fprintf(stderr, "  - Always use the minimum set of pledges needed for your application.\n");
-	fprintf(stderr, "  - 'exec' promise is required in pledge list to run a program.\n");
-	fprintf(stderr, "  - --make-starter uses mkstemp() for temporary files to prevent TOCTOU.\n");
-	fprintf(stderr, "  - Ensure PATH is trusted when using --make-starter (uses 'cc' from PATH).\n");
+	fprintf(stderr,
+	    "Usage: %s pledge1,pledge2,... /unveil-dir1[:perms],... [--] command [args...]\n"
+	    "       %s pledge1,pledge2,... /unveil-dir1[:perms],...   (uses EXEC_CMD env or /bin/sh)\n"
+	    "       %s --make-starter starter_name pledges unveil [--] command [args...]\n"
+	    "         (creates a self-contained starter binary with fixed args)\n"
+	    "       %s --menuconfig\n"
+	    "         (interactive TUI to configure and run)\n"
+	    "       %s --version\n"
+	    "         (show version information)\n\n",
+	    base, base, base, base, base);
+
+	fprintf(stderr,
+	    "Available pledges and their purposes:\n"
+	    "  stdio      Basic I/O, memory, timers, pipes, socketpair.\n"
+	    "             Most programs need this. Includes read/write/\n"
+	    "             mmap/close/dup/pipe/poll/select/sigaction etc.\n"
+	    "  rpath      Read paths, stat files, open read-only.\n"
+	    "  wpath      Write paths, open for writing.\n"
+	    "  cpath      Create and delete files/directories.\n"
+	    "  dpath      Create special files (mkfifo, mknod).\n"
+	    "  inet       TCP/IPv4 and IPv6 sockets (web servers, clients).\n"
+	    "  mcast      Multicast socket options (requires inet).\n"
+	    "  unix       UNIX domain sockets.\n"
+	    "  dns        DNS resolution (reads /etc/resolv.conf, /etc/hosts).\n"
+	    "  fattr      Change file attributes (chmod, chflags, utimes).\n"
+	    "  chown      Change file ownership.\n"
+	    "  flock      File locking (fcntl, flock, lockf).\n"
+	    "  getpw      Read user/group databases (/etc/passwd, /etc/group).\n"
+	    "  sendfd     Send file descriptors via sendmsg(2).\n"
+	    "  recvfd     Receive file descriptors via recvmsg(2).\n"
+	    "  tape       Tape drive ioctl operations.\n"
+	    "  tty        Terminal device operations (/dev/tty, TTY ioctls).\n"
+	    "  proc       Process creation (fork, vfork, kill, setpriority).\n"
+	    "  exec       Execute programs (execve). Needs proc for fork+exec.\n"
+	    "  prot_exec  Executable memory mappings (PROT_EXEC).\n"
+	    "  settime    Set system time (settimeofday, adjtime).\n"
+	    "  ps         Inspect other processes (sysctl for ps(1)).\n"
+	    "  vminfo     Inspect virtual memory (sysctl for top, vmstat).\n"
+	    "  id         Change process identity (setuid, setgid, setgroups).\n"
+	    "  pf         Packet Filter (pf) ioctl operations.\n"
+	    "  route      Read routing table.\n"
+	    "  wroute     Modify routing table.\n"
+	    "  audio      Audio device ioctl operations.\n"
+	    "  video      Video (V4L) device ioctl operations.\n"
+	    "  bpf        BPF device statistics.\n"
+	    "  disklabel  Disk label ioctl operations.\n"
+	    "  drm        DRM device ioctl operations.\n"
+	    "  vmm        VMM (hypervisor) ioctl operations.\n"
+	    "  unveil     Allow calling unveil(2). REQUIRED if unveil dirs given.\n"
+	    "  error      Return ENOSYS on violations instead of SIGABRT.\n"
+	    "             Useful for debugging pledge requirements.\n\n");
+
+	fprintf(stderr,
+	    "Unveil permissions (default: r):\n"
+	    "  r          Read access\n"
+	    "  w          Write access\n"
+	    "  x          Execute access\n"
+	    "  c          Create and delete\n\n");
+
+	fprintf(stderr,
+	    "Unveil path quoting:\n"
+	    "  If a path contains ':' use double quotes around it.\n"
+	    "  Use \\X to escape any character X inside quoted paths.\n"
+	    "  Example: \"/tmp/my\\\"dir\":rwc,/other/dir:rx\n"
+	    "  Empty unveil list (\"\") means pledge-only, no unveil.\n\n");
+
+	fprintf(stderr, "Common usage examples:\n\n");
+
+	fprintf(stderr,
+	    "  # Static web server (e.g., darkhttpd, nginx static)\n"
+	    "  %s stdio,rpath,inet /var/www/htdocs:r -- ./darkhttpd /var/www/htdocs\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # CGI/FastCGI web server (needs child process support)\n"
+	    "  %s stdio,rpath,wpath,cpath,inet,proc,exec,unveil \\\n"
+	    "      /var/www/htdocs:r,/var/tmp:rwc,/usr/local/bin:rx -- ./nginx\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Reverse proxy / load balancer\n"
+	    "  %s stdio,inet,unix,dns /etc:r -- ./relayd\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # File server (read-only)\n"
+	    "  %s stdio,rpath,inet /srv/files:r -- ./ftpd\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Log writer / log aggregator\n"
+	    "  %s stdio,wpath,cpath /var/log:rwc -- ./mylogger\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # DNS client resolver (e.g., drill, dig)\n"
+	    "  %s stdio,inet,dns /etc:r -- /usr/bin/drill\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Shell script runner (minimal)\n"
+	    "  %s stdio,rpath,exec /bin:rx,/usr/bin:rx -- /bin/sh script.sh\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Database server (e.g., SQLite, PostgreSQL)\n"
+	    "  %s stdio,rpath,wpath,cpath,inet /var/db:rwc -- ./postgres\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Mail server (SMTP, e.g., OpenSMTPD)\n"
+	    "  %s stdio,rpath,wpath,cpath,inet,dns,getpw \\\n"
+	    "      /var/mail:rwc,/etc:r -- /usr/sbin/smtpd\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # SSH server (OpenSSH, very restricted)\n"
+	    "  %s stdio,rpath,wpath,cpath,inet,unix,getpw,proc,exec,tty \\\n"
+	    "      /etc:r,/var/empty:r,/usr/bin:rx -- /usr/sbin/sshd\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Path with colon, using quotes\n"
+	    "  %s stdio,rpath,wpath \\\n"
+	    "      \"/tmp/my:dir\":rwc,/var/log:rwc -- ./myapp\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Path with literal quote, using escape\n"
+	    "  %s stdio,rpath \\\n"
+	    "      \"/tmp/my\\\"dir\":rwc -- ./myapp\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Create a self-contained starter binary\n"
+	    "  %s --make-starter webd stdio,rpath,inet /var/www/htdocs:r -- ./darkhttpd /var/www/htdocs\n"
+	    "  # Then run: ./webd\n"
+	    "  # And:      ./webd --help   (shows creation parameters)\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Interactive configuration\n"
+	    "  %s --menuconfig\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Pledge only, no unveil (pass empty string)\n"
+	    "  %s stdio,rpath,inet \"\" -- ./myapp\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "  # Debug mode: find missing pledges without crashing\n"
+	    "  %s stdio,rpath,error /var/www:r -- ./myserver\n\n",
+	    base);
+
+	fprintf(stderr,
+	    "Notes:\n"
+	    "  - The 'unveil' promise is auto-added if unveil dirs are specified.\n"
+	    "  - Use 'error' pledge to debug: violations return ENOSYS not SIGABRT.\n"
+	    "  - Check /var/log/messages for pledge violations when using 'error'.\n"
+	    "  - Always use the minimum set of pledges needed for your application.\n"
+	    "  - 'exec' promise is required in pledge list to run a program.\n"
+	    "  - --make-starter uses mkstemp() for temporary files to prevent TOCTOU.\n"
+	    "  - Ensure PATH is trusted when using --make-starter (uses 'cc' from PATH).\n");
 	exit(1);
 }
 
@@ -247,7 +243,7 @@ parse_pledges(const char *input, char *out, size_t outsize)
 	size_t len = strlen(input);
 	if (len + 1 > outsize)
 		return -1;
-	memcpy(out, input, len + 1);
+	memmove(out, input, len + 1);
 	for (char *p = out; *p; p++) {
 		if (*p == ',')
 			*p = ' ';
@@ -291,12 +287,11 @@ parse_unveil_one(const char *input, char *path, size_t pathsize,
 	const char *p = input;
 	const char *path_start;
 	const char *path_end;
-	size_t perms_len = 4;
 
-	if (perms_size < 5)
-		errx(1, "parse_unveil_one: perms_size too small (need at least 5)");
+	if (perms_size < 2)
+		errx(1, "parse_unveil_one: perms_size too small (need at least 2)");
 
-	strlcpy(perms_buf, "rwxc", perms_size);
+	strlcpy(perms_buf, "r", perms_size);
 
 	while (is_whitespace(*p))
 		p++;
@@ -326,7 +321,7 @@ parse_unveil_one(const char *input, char *path, size_t pathsize,
 
 		if (*p == ':') {
 			p++;
-			perms_len = 0;
+			size_t perms_len = 0;
 			memset(perms_buf, 0, perms_size);
 			while (*p && !is_whitespace(*p) && *p != ',' &&
 			    perms_len < perms_size - 1) {
@@ -347,17 +342,36 @@ parse_unveil_one(const char *input, char *path, size_t pathsize,
 		}
 	} else {
 		path_start = p;
-		const char *first_colon = NULL;
+		const char *last_colon = NULL;
 		while (*p && !is_whitespace(*p) && *p != ',') {
-			if (*p == ':' && first_colon == NULL)
-				first_colon = p;
+			if (*p == ':')
+				last_colon = p;
 			p++;
 		}
 		path_end = p;
 
-		if (first_colon != NULL) {
-			/* Force quotes for any path containing ':' to eliminate ambiguity */
-			errx(1, "unveil: unquoted path contains ':'; use double quotes for paths containing ':'");
+		if (last_colon != NULL) {
+			const char *perm_start = last_colon + 1;
+			size_t perm_len = path_end - perm_start;
+			if (perm_len == 0)
+				errx(1, "unveil: unquoted path contains ':' with empty permissions; use double quotes for paths containing ':'");
+			for (size_t i = 0; i < perm_len; i++) {
+				if (!is_valid_perm(perm_start[i]))
+					errx(1, "unveil: unquoted path contains ':'; use double quotes for paths containing ':'");
+			}
+			size_t j = 0;
+			memset(perms_buf, 0, perms_size);
+			for (size_t i = 0; i < perm_len && j < perms_size - 1; i++) {
+				if (strchr(perms_buf, perm_start[i]))
+					continue;
+				if (j >= 4)
+					errx(1, "unveil: too many permissions (max 4: rwxc)");
+				perms_buf[j++] = perm_start[i];
+			}
+			perms_buf[j] = '\0';
+			if (j == 0)
+				errx(1, "unveil: empty permissions after colon");
+			path_end = last_colon;
 		}
 	}
 
@@ -853,10 +867,10 @@ make_starter(const char *starter_name, const char *pledges_raw,
 		break;
 	}
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		unlink(src_path);
+		int exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 		unlink(out_tmp);
-		errx(1, "compilation of %s failed (cc exited %d)", starter_name,
-		    WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+		errx(1, "compilation of %s failed (cc exited %d). Source retained at %s for inspection.",
+		    starter_name, exit_status, src_path);
 	}
 
 	unlink(src_path);
@@ -991,7 +1005,7 @@ read_key(void)
 		FD_ZERO(&rfds);
 		FD_SET(STDIN_FILENO, &rfds);
 		tv.tv_sec = 0;
-		tv.tv_usec = 50000;	/* 50ms timeout for ESC sequence */
+		tv.tv_usec = 100000;	/* 100ms timeout for ESC sequence */
 
 		char seq[3];
 		int ret = select(STDIN_FILENO + 1, &rfds, NULL, NULL, &tv);
@@ -1006,7 +1020,7 @@ read_key(void)
 		if (read(STDIN_FILENO, &seq[0], 1) != 1)
 			return KEY_ESC;
 
-		tv.tv_usec = 50000;
+		tv.tv_usec = 100000;
 		FD_ZERO(&rfds);
 		FD_SET(STDIN_FILENO, &rfds);
 		ret = select(STDIN_FILENO + 1, &rfds, NULL, NULL, &tv);
@@ -1376,21 +1390,26 @@ draw_command(int rows, int cols)
 	if (cmd_mode == 0) {
 		move_cursor(start_row, 4);
 		print_line("\x1b[1mEnter command path:\x1b[0m");
-		move_cursor(start_row + 2, 6);
-		char display_input[ARG_LEN];
+		int input_row = start_row + 2;
 		if (strlen(cmd_path) > 0) {
-			sanitize_for_display(cmd_path, display_input, sizeof(display_input));
-		} else {
-			sanitize_for_display(cmd_input, display_input, sizeof(display_input));
+			move_cursor(input_row, 6);
+			char display_current[sizeof(cmd_path)];
+			sanitize_for_display(cmd_path, display_current, sizeof(display_current));
+			snprintf(buf, sizeof(buf), "Current: %s", display_current);
+			print_line(buf);
+			input_row++;
 		}
+		move_cursor(input_row, 6);
+		char display_input[ARG_LEN];
+		sanitize_for_display(cmd_input, display_input, sizeof(display_input));
 		snprintf(buf, sizeof(buf), "> %s\x1b[7m \x1b[0m", display_input);
 		print_line(buf);
-		move_cursor(start_row + 4, 6);
+		move_cursor(input_row + 2, 6);
 		print_line("Relative paths are preserved (e.g. ./myapp, ../bin/tool)");
-		move_cursor(start_row + 5, 6);
+		move_cursor(input_row + 3, 6);
 		print_line("Absolute paths are used as-is (e.g. /bin/sh, /usr/local/bin/nginx)");
 		if (input_error[0]) {
-			move_cursor(start_row + 7, 6);
+			move_cursor(input_row + 5, 6);
 			char ebuf[512];
 			snprintf(ebuf, sizeof(ebuf), "\x1b[31mError: %s\x1b[0m", input_error);
 			print_line(ebuf);

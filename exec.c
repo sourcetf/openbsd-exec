@@ -784,7 +784,7 @@ make_starter(const char *starter_name, const char *pledges_raw,
 		for (int i = 0; i < npairs; i++) {
 			c_escape(pairs[i].path, buf, sizeof(buf));
 			fprintf(fp, "    if (unveil(\"%s\", \"%s\") == -1)\n", buf, pairs[i].perms);
-			fprintf(fp, "        err(1, \"unveil(\\\\\"%%s\\\\\", \\\\\"%%s\\\\\")\", \"%s\", \"%s\");\n",
+			fprintf(fp, "        err(1, \"unveil(\\\"%%s\\\", \\\"%%s\\\")\", \"%s\", \"%s\");\n",
 			    buf, pairs[i].perms);
 		}
 		fprintf(fp, "    if (unveil(NULL, NULL) == -1)\n");
@@ -793,18 +793,18 @@ make_starter(const char *starter_name, const char *pledges_raw,
 
 	/* pledge */
 	fprintf(fp, "    if (pledge(pledges, pledges) == -1)\n");
-	fprintf(fp, "        err(1, \"pledge(\\\\\"%%s\\\\\", \\\\\"%%s\\\\\")\", pledges, pledges);\n\n");
+	fprintf(fp, "        err(1, \"pledge(\\\"%%s\\\", \\\"%%s\\\")\", pledges, pledges);\n\n");
 	fprintf(fp, "    if (has_word(pledges, \"stdio\")) {\n");
 	fprintf(fp, "        if (pledge(\"stdio exec\", pledges) == -1)\n");
-	fprintf(fp, "            err(1, \"pledge(\\\\\"stdio exec\\\\\", \\\\\"%%s\\\\\")\", pledges);\n");
+	fprintf(fp, "            err(1, \"pledge(\\\"stdio exec\\\", \\\"%%s\\\")\", pledges);\n");
 	fprintf(fp, "    } else {\n");
 	fprintf(fp, "        if (pledge(\"exec\", pledges) == -1)\n");
-	fprintf(fp, "            err(1, \"pledge(\\\\\"exec\\\\\", \\\\\"%%s\\\\\")\", pledges);\n");
+	fprintf(fp, "            err(1, \"pledge(\\\"exec\\\", \\\"%%s\\\")\", pledges);\n");
 	fprintf(fp, "    }\n\n");
 
 	/* exec */
 	if (cmd_argc > 0) {
-		fprintf(fp, "    const char *cmd_argv[] = { ");
+		fprintf(fp, "    char *cmd_argv[] = { ");
 		for (int i = 0; i < cmd_argc; i++) {
 			c_escape(cmd_argv[i], buf, sizeof(buf));
 			fprintf(fp, "\"%s\", ", buf);

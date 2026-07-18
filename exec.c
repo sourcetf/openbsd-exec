@@ -62,6 +62,7 @@ usage(const char *prog)
 	    "       %s pledge1,pledge2,... /unveil-dir1[:perms],...   (uses EXEC_CMD env or /bin/sh)\n"
 	    "       %s --make-starter starter_name pledges unveil [--] command [args...]\n"
 	    "         (creates a self-contained starter binary with fixed args)\n"
+	    "         The generated starter supports --modify to edit itself.\n"
 	    "       %s --menuconfig\n"
 	    "         (interactive TUI to configure and run)\n"
 	    "       %s --version\n"
@@ -194,7 +195,8 @@ usage(const char *prog)
 	    "  # Create a self-contained starter binary\n"
 	    "  %s --make-starter webd stdio,rpath,inet /var/www/htdocs:r -- ./darkhttpd /var/www/htdocs\n"
 	    "  # Then run: ./webd\n"
-	    "  # And:      ./webd --help   (shows creation parameters)\n\n",
+	    "  # And:      ./webd --help   (shows creation parameters)\n"
+	    "  # And:      ./webd --modify (edit configuration interactively)\n\n",
 	    base);
 
 	fprintf(stderr,
@@ -220,7 +222,8 @@ usage(const char *prog)
 	    "  - Always use the minimum set of pledges needed for your application.\n"
 	    "  - 'exec' promise is required in pledge list to run a program.\n"
 	    "  - --make-starter uses mkstemp() for temporary files to prevent TOCTOU.\n"
-	    "  - Ensure PATH is trusted when using --make-starter (uses 'cc' from PATH).\n");
+	    "  - Ensure PATH is trusted when using --make-starter (uses 'cc' from PATH).\n"
+	    "  - Generated starters support --modify without recompilation (no exec).\n");
 	exit(1);
 }
 
@@ -649,6 +652,11 @@ safe_disable_raw_mode(void)
 	}
 }
 
+/*
+ * Generate a self-contained starter binary that embeds its configuration
+ * in a modifiable data area. The starter supports --modify to edit itself
+ * without calling exec or requiring an external compiler.
+ */
 static void
 make_starter(const char *starter_name, const char *pledges_raw,
     const char *unveil_raw, int cmd_argc, char **cmd_argv,
@@ -687,12 +695,6 @@ make_starter(const char *starter_name, const char *pledges_raw,
 		snprintf(pledges + plen, sizeof(pledges) - plen, " unveil");
 	}
 
-	/*
-	 * Use mkstemp for safe temporary file creation.
-	 * Compile with -x c to force C language mode regardless of file suffix.
-	 * Use execlp("cc", ...) which searches PATH for the compiler.
-	 * The caller is responsible for ensuring PATH is trusted.
-	 */
 	char src_path[4096];
 	snprintf(src_path, sizeof(src_path), "%s.XXXXXX", starter_name);
 	int fd = mkstemp(src_path);
@@ -706,133 +708,402 @@ make_starter(const char *starter_name, const char *pledges_raw,
 		err(1, "fdopen");
 	}
 
-	char buf[16384];
+	char buf[131072];
 
 	/* Header */
-	fprintf(fp, "/* Auto-generated starter by exec.c */\n");
-	fprintf(fp, "/* Do not edit manually. Regenerate with exec.c --make-starter. */\n");
-	fprintf(fp, "#include <stdio.h>\n");
-	fprintf(fp, "#include <stdlib.h>\n");
-	fprintf(fp, "#include <string.h>\n");
-	fprintf(fp, "#include <unistd.h>\n");
-	fprintf(fp, "#include <err.h>\n\n");
+	fprintf(fp, "/* Auto-generated starter by exec.c */\\n");
+	fprintf(fp, "/* Do not edit manually. Use --modify to edit. */\\n");
+	fprintf(fp, "#include <stdio.h>\\n");
+	fprintf(fp, "#include <stdlib.h>\\n");
+	fprintf(fp, "#include <string.h>\\n");
+	fprintf(fp, "#include <unistd.h>\\n");
+	fprintf(fp, "#include <err.h>\\n");
+	fprintf(fp, "#include <fcntl.h>\\n");
+	fprintf(fp, "#include <sys/stat.h>\\n");
+	fprintf(fp, "#include <errno.h>\\n\\n");
 
-	/* Hardcoded strings - pledge string is pre-validated and space-separated */
-	c_escape(creation_cmd, buf, sizeof(buf));
-	fprintf(fp, "static const char *creation_cmd = \"%s\";\n", buf);
+	/* Constants */
+	fprintf(fp, "#define CFG_MAGIC \"EXEC_CFG_V1\\\\n\"\\n");
+	fprintf(fp, "#define CFG_SIZE 65536\\n");
+	fprintf(fp, "#define MAX_UNVEIL 64\\n");
+	fprintf(fp, "#define MAX_ARGS 64\\n\\n");
+
+	fprintf(fp, "struct unveil_pair {\\n");
+	fprintf(fp, "    char path[4096];\\n");
+	fprintf(fp, "    char perms[8];\\n");
+	fprintf(fp, "};\\n\\n");
+
+	/* Config area - initialized with current settings */
+	fprintf(fp, "static char config_area[CFG_SIZE] =\\n");
+	fprintf(fp, "    \"EXEC_CFG_V1\\\\n\"\\n");
+
+	/* Pledges line */
 	c_escape(pledges, buf, sizeof(buf));
-	fprintf(fp, "static const char *pledges = \"%s\";\n", buf);
+	fprintf(fp, "    \"P %s\\\\n\"\\n", buf);
 
-	/* usage() - ALL format strings use %%s with parameters, never embed user data */
-	fprintf(fp, "\nstatic void\n");
-	fprintf(fp, "usage(const char *prog)\n");
-	fprintf(fp, "{\n");
-	fprintf(fp, "    fprintf(stderr, \"Auto-generated starter.\\n\");\n");
-	fprintf(fp, "    fprintf(stderr, \"Created by: %%s\\n\", creation_cmd);\n");
-	fprintf(fp, "    fprintf(stderr, \"Usage: %%s [--help]\\n\", prog);\n");
-	fprintf(fp, "    fprintf(stderr, \"\\n\");\n");
-	fprintf(fp, "    fprintf(stderr, \"Pledges: %%s\\n\", pledges);\n");
-	c_escape(unveil_raw, buf, sizeof(buf));
-	fprintf(fp, "    fprintf(stderr, \"Unveil:  %%s\\n\", \"%s\");\n", buf);
-	/* Command: use %%s placeholders, then pass each arg as parameter */
-	fprintf(fp, "    fprintf(stderr, \"Command:");
-	for (int i = 0; i < cmd_argc; i++)
-		fprintf(fp, " %%s");
-	fprintf(fp, "\\n\"");
-	for (int i = 0; i < cmd_argc; i++) {
-		c_escape(cmd_argv[i], buf, sizeof(buf));
-		fprintf(fp, ", \"%s\"", buf);
+	/* Unveil pairs - use \\t as separator to avoid path/perm ambiguity with spaces */
+	for (int i = 0; i < npairs; i++) {
+		c_escape(pairs[i].path, buf, sizeof(buf));
+		fprintf(fp, "    \"U %s\\t%s\\\\n\"\\n", buf, pairs[i].perms);
 	}
-	fprintf(fp, ");\n");
-	fprintf(fp, "    fprintf(stderr, \"\\n\");\n");
-	fprintf(fp, "    fprintf(stderr, \"This starter is self-contained and does not depend on exec.c.\\n\");\n");
-	fprintf(fp, "    exit(1);\n");
-	fprintf(fp, "}\n\n");
 
-	/* is_whitespace (same implementation as exec.c) */
-	fprintf(fp, "static int is_whitespace(char c)\n");
-	fprintf(fp, "{\n");
-	fprintf(fp, "    return c == ' ' || c == '\\t' || c == '\\n' || c == '\\r' || c == '\\f' || c == '\\v';\n");
-	fprintf(fp, "}\n\n");
+	/* Command and args */
+	if (cmd_argc > 0) {
+		c_escape(cmd_argv[0], buf, sizeof(buf));
+		fprintf(fp, "    \"C %s\\\\n\"\\n", buf);
+		for (int i = 1; i < cmd_argc; i++) {
+			c_escape(cmd_argv[i], buf, sizeof(buf));
+			fprintf(fp, "    \"A %s\\\\n\"\\n", buf);
+		}
+	} else {
+		fprintf(fp, "    \"C\\\\n\"\\n");
+	}
+	fprintf(fp, "    ;\\n\\n");
 
-	/* has_word (same implementation as exec.c) */
-	fprintf(fp, "static int has_word(const char *haystack, const char *needle)\n");
-	fprintf(fp, "{\n");
-	fprintf(fp, "    const char *p = haystack;\n");
-	fprintf(fp, "    size_t nlen = strlen(needle);\n");
-	fprintf(fp, "    if (nlen == 0) return 0;\n");
-	fprintf(fp, "    while ((p = strstr(p, needle)) != NULL) {\n");
-	fprintf(fp, "        int left_ok = (p == haystack) || is_whitespace(*(p - 1));\n");
-	fprintf(fp, "        int right_ok = (p[nlen] == '\\0') || is_whitespace(p[nlen]);\n");
-	fprintf(fp, "        if (left_ok && right_ok) return 1;\n");
-	fprintf(fp, "        p += nlen;\n");
-	fprintf(fp, "    }\n");
-	fprintf(fp, "    return 0;\n");
-	fprintf(fp, "}\n\n");
+	/* creation_cmd */
+	c_escape(creation_cmd, buf, sizeof(buf));
+	fprintf(fp, "static const char *creation_cmd = \"%s\";\\n\\n", buf);
 
-	/* main() */
-	fprintf(fp, "int\nmain(int argc, char *argv[])\n");
-	fprintf(fp, "{\n");
-	fprintf(fp, "    if (argc >= 2 && (strcmp(argv[1], \"--help\") == 0 ||\n");
-	fprintf(fp, "                      strcmp(argv[1], \"-h\") == 0))\n");
-	fprintf(fp, "        usage(argv[0]);\n\n");
-	fprintf(fp, "    if (!has_word(pledges, \"exec\"))\n");
-	fprintf(fp, "        errx(1, \"pledges must include 'exec' to run a program\");\n\n");
+	/* is_whitespace */
+	fprintf(fp, "static int is_whitespace(char c)\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    return c == ' ' || c == '\\t' || c == '\\n' || c == '\\r' || c == '\\f' || c == '\\v';\\n");
+	fprintf(fp, "}\\n\\n");
 
-	/* unveil calls - only if paths were configured */
+	/* is_valid_perm */
+	fprintf(fp, "static int is_valid_perm(char c)\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    return c == 'r' || c == 'w' || c == 'x' || c == 'c';\\n");
+	fprintf(fp, "}\\n\\n");
+
+	/* has_word */
+	fprintf(fp, "static int has_word(const char *haystack, const char *needle)\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    const char *p = haystack;\\n");
+	fprintf(fp, "    size_t nlen = strlen(needle);\\n");
+	fprintf(fp, "    if (nlen == 0) return 0;\\n");
+	fprintf(fp, "    while ((p = strstr(p, needle)) != NULL) {\\n");
+	fprintf(fp, "        int left_ok = (p == haystack) || is_whitespace(*(p - 1));\\n");
+	fprintf(fp, "        int right_ok = (p[nlen] == '\\0') || is_whitespace(p[nlen]);\\n");
+	fprintf(fp, "        if (left_ok && right_ok) return 1;\\n");
+	fprintf(fp, "        p += nlen;\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    return 0;\\n");
+	fprintf(fp, "}\\n\\n");
+
+	/* parse_config - FIXED: use '\\t' separator for U lines */
+	fprintf(fp, "static void parse_config(char *pledges, size_t plen,\\n");
+	fprintf(fp, "    struct unveil_pair *pairs, int max_pairs, int *npairs,\\n");
+	fprintf(fp, "    char *cmd, size_t cmdlen,\\n");
+	fprintf(fp, "    char args[][4096], int *nargs, int max_args)\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    const char *p = config_area;\\n");
+	fprintf(fp, "    size_t magic_len = strlen(CFG_MAGIC);\\n");
+	fprintf(fp, "    if (strncmp(p, CFG_MAGIC, magic_len) != 0)\\n");
+	fprintf(fp, "        errx(1, \"corrupted config area\");\\n");
+	fprintf(fp, "    p += magic_len;\\n");
+	fprintf(fp, "    *npairs = 0;\\n");
+	fprintf(fp, "    *nargs = 0;\\n");
+	fprintf(fp, "    pledges[0] = '\\0';\\n");
+	fprintf(fp, "    cmd[0] = '\\0';\\n");
+	fprintf(fp, "    char line[4096];\\n");
+	fprintf(fp, "    while (*p && *p != '\\0') {\\n");
+	fprintf(fp, "        size_t i = 0;\\n");
+	fprintf(fp, "        while (*p && *p != '\\n' && i < sizeof(line) - 1)\\n");
+	fprintf(fp, "            line[i++] = *p++;\\n");
+	fprintf(fp, "        line[i] = '\\0';\\n");
+	fprintf(fp, "        if (*p == '\\n') p++;\\n");
+	fprintf(fp, "        if (line[0] == '\\0') continue;\\n");
+	fprintf(fp, "        if (line[0] == 'P' && line[1] == ' ') {\\n");
+	fprintf(fp, "            strlcpy(pledges, line + 2, plen);\\n");
+	fprintf(fp, "        } else if (line[0] == 'U' && line[1] == ' ') {\\n");
+	fprintf(fp, "            if (*npairs >= max_pairs) continue;\\n");
+	fprintf(fp, "            char *up = line + 2;\\n");
+	fprintf(fp, "            char *sp = strrchr(up, '\\t');\\n");
+	fprintf(fp, "            if (!sp) continue;\\n");
+	fprintf(fp, "            *sp = '\\0';\\n");
+	fprintf(fp, "            strlcpy(pairs[*npairs].path, up, sizeof(pairs[0].path));\\n");
+	fprintf(fp, "            strlcpy(pairs[*npairs].perms, sp + 1, sizeof(pairs[0].perms));\\n");
+	fprintf(fp, "            (*npairs)++;\\n");
+	fprintf(fp, "        } else if (line[0] == 'C' && line[1] == ' ') {\\n");
+	fprintf(fp, "            strlcpy(cmd, line + 2, cmdlen);\\n");
+	fprintf(fp, "        } else if (line[0] == 'A' && line[1] == ' ') {\\n");
+	fprintf(fp, "            if (*nargs >= max_args) continue;\\n");
+	fprintf(fp, "            strlcpy(args[*nargs], line + 2, 4096);\\n");
+	fprintf(fp, "            (*nargs)++;\\n");
+	fprintf(fp, "        }\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "}\\n\\n");
+
+	/* find_magic - FIXED: validate following context to avoid false matches */
+	fprintf(fp, "static char *find_magic(const char *buf, size_t len,\\n");
+	fprintf(fp, "    const char *magic, size_t magic_len)\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    for (size_t i = 0; i + magic_len <= len; i++) {\\n");
+	fprintf(fp, "        if (memcmp(buf + i, magic, magic_len) == 0) {\\n");
+	fprintf(fp, "            if (i + magic_len < len) {\\n");
+	fprintf(fp, "                char c = buf[i + magic_len];\\n");
+	fprintf(fp, "                if (c == 'P' || c == 'U' || c == 'C' || c == 'A' || c == '\\0')\\n");
+	fprintf(fp, "                    return (char *)(buf + i);\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "        }\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    return NULL;\\n");
+	fprintf(fp, "}\\n\\n");
+
+	/* self_modify */
+	fprintf(fp, "static void self_modify(const char *path, const char *new_cfg, size_t new_len)\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    if (new_len >= CFG_SIZE - strlen(CFG_MAGIC)) {\\n");
+	fprintf(fp, "        errx(1, \"new configuration too large\");\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    int fd = open(path, O_RDONLY);\\n");
+	fprintf(fp, "    if (fd == -1) err(1, \"open %%s\", path);\\n");
+	fprintf(fp, "    struct stat st;\\n");
+	fprintf(fp, "    if (fstat(fd, &st) == -1) err(1, \"fstat\");\\n");
+	fprintf(fp, "    char *buf = malloc(st.st_size);\\n");
+	fprintf(fp, "    if (!buf) err(1, \"malloc\");\\n");
+	fprintf(fp, "    if (read(fd, buf, st.st_size) != st.st_size) err(1, \"read\");\\n");
+	fprintf(fp, "    close(fd);\\n");
+	fprintf(fp, "    char *magic_pos = find_magic(buf, st.st_size, CFG_MAGIC, strlen(CFG_MAGIC));\\n");
+	fprintf(fp, "    if (!magic_pos) { free(buf); errx(1, \"cannot find config magic\"); }\\n");
+	fprintf(fp, "    off_t offset = magic_pos - buf;\\n");
+	fprintf(fp, "    char block[CFG_SIZE];\\n");
+	fprintf(fp, "    memset(block, 0, sizeof(block));\\n");
+	fprintf(fp, "    memcpy(block, CFG_MAGIC, strlen(CFG_MAGIC));\\n");
+	fprintf(fp, "    memcpy(block + strlen(CFG_MAGIC), new_cfg, new_len);\\n");
+	fprintf(fp, "    char tmp[4096];\\n");
+	fprintf(fp, "    const char *slash = strrchr(path, '/');\\n");
+	fprintf(fp, "    if (slash) {\\n");
+	fprintf(fp, "        snprintf(tmp, sizeof(tmp), \"%%.*s/.%%s.tmp.XXXXXX\",\\n");
+	fprintf(fp, "            (int)(slash - path), path, slash + 1);\\n");
+	fprintf(fp, "    } else {\\n");
+	fprintf(fp, "        snprintf(tmp, sizeof(tmp), \".%%s.tmp.XXXXXX\", path);\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    int tfd = mkstemp(tmp);\\n");
+	fprintf(fp, "    if (tfd == -1) { free(buf); err(1, \"mkstemp\"); }\\n");
+	fprintf(fp, "    if (write(tfd, buf, offset) != offset) err(1, \"write\");\\n");
+	fprintf(fp, "    if (write(tfd, block, CFG_SIZE) != CFG_SIZE) err(1, \"write\");\\n");
+	fprintf(fp, "    off_t after = offset + CFG_SIZE;\\n");
+	fprintf(fp, "    if (write(tfd, buf + after, st.st_size - after) != st.st_size - after) err(1, \"write\");\\n");
+	fprintf(fp, "    close(tfd);\\n");
+	fprintf(fp, "    free(buf);\\n");
+	fprintf(fp, "    if (rename(tmp, path) == -1) { unlink(tmp); err(1, \"rename\"); }\\n");
+	fprintf(fp, "    printf(\"Configuration saved. Restart starter to use new settings.\\\\n\");\\n");
+	fprintf(fp, "}\\n\\n");
+
+	/* modify_mode - FIXED: no double magic, validation, error messages */
+	fprintf(fp, "static void modify_mode(const char *self)\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    char pledges[4096];\\n");
+	fprintf(fp, "    struct unveil_pair pairs[MAX_UNVEIL];\\n");
+	fprintf(fp, "    int npairs;\\n");
+	fprintf(fp, "    char cmd[4096];\\n");
+	fprintf(fp, "    char args[MAX_ARGS][4096];\\n");
+	fprintf(fp, "    int nargs;\\n");
+	fprintf(fp, "    parse_config(pledges, sizeof(pledges), pairs, MAX_UNVEIL, &npairs,\\n");
+	fprintf(fp, "        cmd, sizeof(cmd), args, &nargs, MAX_ARGS);\\n");
+	fprintf(fp, "    printf(\"\\\\n=== Starter Configuration Editor ===\\\\n\\\\n\");\\n");
+	fprintf(fp, "    printf(\"Current pledges: %%s\\\\n\", pledges[0] ? pledges : \"(none)\");\\n");
+	fprintf(fp, "    printf(\"Enter new pledges (space/comma separated, empty to keep): \");\\n");
+	fprintf(fp, "    char new_pledges[4096];\\n");
+	fprintf(fp, "    if (fgets(new_pledges, sizeof(new_pledges), stdin)) {\\n");
+	fprintf(fp, "        size_t len = strlen(new_pledges);\\n");
+	fprintf(fp, "        if (len > 0 && new_pledges[len-1] == '\\n') new_pledges[len-1] = '\\0';\\n");
+	fprintf(fp, "        if (new_pledges[0] != '\\0') {\\n");
+	fprintf(fp, "            for (char *p = new_pledges; *p; p++) if (*p == ',') *p = ' ';\\n");
+	fprintf(fp, "            strlcpy(pledges, new_pledges, sizeof(pledges));\\n");
+	fprintf(fp, "        }\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    printf(\"\\\\nCurrent unveil paths:\\\\n\");\\n");
+	fprintf(fp, "    if (npairs == 0) printf(\"  (none)\\\\n\");\\n");
+	fprintf(fp, "    else for (int i = 0; i < npairs; i++) printf(\"  %%s:%%s\\\\n\", pairs[i].path, pairs[i].perms);\\n");
+	fprintf(fp, "    printf(\"Enter new unveil (path:perms,path:perms, empty to keep): \");\\n");
+	fprintf(fp, "    char unveil_buf[8192] = \"\";\\n");
+	fprintf(fp, "    char unveil_input[8192];\\n");
+	fprintf(fp, "    if (fgets(unveil_input, sizeof(unveil_input), stdin)) {\\n");
+	fprintf(fp, "        size_t len = strlen(unveil_input);\\n");
+	fprintf(fp, "        if (len > 0 && unveil_input[len-1] == '\\n') unveil_input[len-1] = '\\0';\\n");
+	fprintf(fp, "        strlcpy(unveil_buf, unveil_input, sizeof(unveil_buf));\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    printf(\"\\\\nCurrent command: %%s\\\\n\", cmd[0] ? cmd : \"(not set)\");\\n");
+	fprintf(fp, "    printf(\"Enter new command (empty to keep): \");\\n");
+	fprintf(fp, "    char new_cmd[4096];\\n");
+	fprintf(fp, "    if (fgets(new_cmd, sizeof(new_cmd), stdin)) {\\n");
+	fprintf(fp, "        size_t len = strlen(new_cmd);\\n");
+	fprintf(fp, "        if (len > 0 && new_cmd[len-1] == '\\n') new_cmd[len-1] = '\\0';\\n");
+	fprintf(fp, "        if (new_cmd[0] != '\\0') strlcpy(cmd, new_cmd, sizeof(cmd));\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    printf(\"\\\\nCurrent args: \");\\n");
+	fprintf(fp, "    for (int i = 0; i < nargs; i++) { if (i > 0) printf(\" \"); printf(\"%%s\", args[i]); }\\n");
+	fprintf(fp, "    if (nargs == 0) printf(\"(none)\");\\n");
+	fprintf(fp, "    printf(\"\\\\n\");\\n");
+	fprintf(fp, "    printf(\"Enter new args (space separated, empty to keep): \");\\n");
+	fprintf(fp, "    char args_line[8192];\\n");
+	fprintf(fp, "    char new_args[MAX_ARGS][4096];\\n");
+	fprintf(fp, "    int new_nargs = 0;\\n");
+	fprintf(fp, "    if (fgets(args_line, sizeof(args_line), stdin)) {\\n");
+	fprintf(fp, "        size_t len = strlen(args_line);\\n");
+	fprintf(fp, "        if (len > 0 && args_line[len-1] == '\\n') args_line[len-1] = '\\0';\\n");
+	fprintf(fp, "        if (args_line[0] != '\\0') {\\n");
+	fprintf(fp, "            char *ap = args_line;\\n");
+	fprintf(fp, "            while (*ap) {\\n");
+	fprintf(fp, "                while (is_whitespace(*ap)) ap++;\\n");
+	fprintf(fp, "                if (*ap == '\\0') break;\\n");
+	fprintf(fp, "                char *start = ap;\\n");
+	fprintf(fp, "                while (*ap && !is_whitespace(*ap)) ap++;\\n");
+	fprintf(fp, "                size_t alen = ap - start;\\n");
+	fprintf(fp, "                if (new_nargs < MAX_ARGS && alen < 4096) {\\n");
+	fprintf(fp, "                    memcpy(new_args[new_nargs], start, alen);\\n");
+	fprintf(fp, "                    new_args[new_nargs][alen] = '\\0';\\n");
+	fprintf(fp, "                    new_nargs++;\\n");
+	fprintf(fp, "                }\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "            for (int i = 0; i < new_nargs; i++)\\n");
+	fprintf(fp, "                strlcpy(args[i], new_args[i], 4096);\\n");
+	fprintf(fp, "            nargs = new_nargs;\\n");
+	fprintf(fp, "        }\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    printf(\"\\\\nSave changes? [y/N]: \");\\n");
+	fprintf(fp, "    char confirm[8];\\n");
+	fprintf(fp, "    if (!fgets(confirm, sizeof(confirm), stdin) ||\\n");
+	fprintf(fp, "        (confirm[0] != 'y' && confirm[0] != 'Y')) {\\n");
+	fprintf(fp, "        printf(\"Cancelled.\\\\n\");\\n");
+	fprintf(fp, "        return;\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    if (unveil_buf[0] != '\\0') {\\n");
+	fprintf(fp, "        npairs = 0;\\n");
+	fprintf(fp, "        char *p = unveil_buf;\\n");
+	fprintf(fp, "        while (*p) {\\n");
+	fprintf(fp, "            if (npairs >= MAX_UNVEIL) {\\n");
+	fprintf(fp, "                fprintf(stderr, \"warning: too many unveil paths (max %%d)\\\\n\", MAX_UNVEIL);\\n");
+	fprintf(fp, "                break;\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "            while (*p == ',') p++;\\n");
+	fprintf(fp, "            if (*p == '\\0') break;\\n");
+	fprintf(fp, "            char *path_start = p;\\n");
+	fprintf(fp, "            char *colon = NULL;\\n");
+	fprintf(fp, "            while (*p && *p != ',') { if (*p == ':') colon = p; p++; }\\n");
+	fprintf(fp, "            if (!colon) {\\n");
+	fprintf(fp, "                fprintf(stderr, \"warning: unveil entry '%%.*s' missing ':perms', skipped\\\\n\",\\n");
+	fprintf(fp, "                    (int)(p - path_start), path_start);\\n");
+	fprintf(fp, "                continue;\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "            size_t path_len = colon - path_start;\\n");
+	fprintf(fp, "            if (path_len == 0 || path_len >= sizeof(pairs[0].path)) {\\n");
+	fprintf(fp, "                fprintf(stderr, \"warning: unveil path too long or empty, skipped\\\\n\");\\n");
+	fprintf(fp, "                continue;\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "            size_t perm_len = p - colon - 1;\\n");
+	fprintf(fp, "            if (perm_len == 0 || perm_len >= sizeof(pairs[0].perms)) {\\n");
+	fprintf(fp, "                fprintf(stderr, \"warning: unveil permissions empty or too long, skipped\\\\n\");\\n");
+	fprintf(fp, "                continue;\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "            int valid_perms = 1;\\n");
+	fprintf(fp, "            for (size_t k = 0; k < perm_len; k++) {\\n");
+	fprintf(fp, "                if (!is_valid_perm(colon[1 + k])) {\\n");
+	fprintf(fp, "                    fprintf(stderr, \"warning: invalid perm '%%c', skipped\\\\n\", colon[1 + k]);\\n");
+	fprintf(fp, "                    valid_perms = 0; break;\\n");
+	fprintf(fp, "                }\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "            if (!valid_perms) continue;\\n");
+	fprintf(fp, "            memcpy(pairs[npairs].path, path_start, path_len);\\n");
+	fprintf(fp, "            pairs[npairs].path[path_len] = '\\0';\\n");
+	fprintf(fp, "            memcpy(pairs[npairs].perms, colon + 1, perm_len);\\n");
+	fprintf(fp, "            pairs[npairs].perms[perm_len] = '\\0';\\n");
+	fprintf(fp, "            npairs++;\\n");
+	fprintf(fp, "        }\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    char new_cfg[CFG_SIZE];\\n");
+	fprintf(fp, "    int pos = 0;\\n");
+	fprintf(fp, "    pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos, \"P %%s\\\\n\", pledges);\\n");
+	fprintf(fp, "    for (int i = 0; i < npairs; i++)\\n");
+	fprintf(fp, "        pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos,\\n");
+	fprintf(fp, "            \"U %%s\\t%%s\\\\n\", pairs[i].path, pairs[i].perms);\\n");
+	fprintf(fp, "    pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos, \"C %%s\\\\n\", cmd);\\n");
+	fprintf(fp, "    for (int i = 0; i < nargs; i++)\\n");
+	fprintf(fp, "        pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos, \"A %%s\\\\n\", args[i]);\\n");
+	fprintf(fp, "    self_modify(self, new_cfg, pos);\\n");
+	fprintf(fp, "}\\n\\n");
+
+	/* usage */
+	fprintf(fp, "static void usage(const char *prog)\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    fprintf(stderr, \"Auto-generated starter.\\\\n\");\\n");
+	fprintf(fp, "    fprintf(stderr, \"Created by: %%s\\\\n\", creation_cmd);\\n");
+	fprintf(fp, "    fprintf(stderr, \"Usage: %%s [--help] [--modify]\\\\n\", prog);\\n");
+	fprintf(fp, "    fprintf(stderr, \"\\\\n\");\\n");
+	fprintf(fp, "    fprintf(stderr, \"Options:\\\\n\");\\n");
+	fprintf(fp, "    fprintf(stderr, \"  --help    Show this help\\\\n\");\\n");
+	fprintf(fp, "    fprintf(stderr, \"  --modify  Edit configuration interactively\\\\n\");\\n");
+	fprintf(fp, "    fprintf(stderr, \"\\\\n\");\\n");
+	fprintf(fp, "    fprintf(stderr, \"This starter is self-contained.\\\\n\");\\n");
+	fprintf(fp, "    exit(1);\\n");
+	fprintf(fp, "}\\n\\n");
+
+	/* main */
+	fprintf(fp, "int main(int argc, char *argv[])\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    if (argc >= 2 && strcmp(argv[1], \"--modify\") == 0) {\\n");
+	fprintf(fp, "        modify_mode(argv[0]);\\n");
+	fprintf(fp, "        return 0;\\n");
+	fprintf(fp, "    }\\n");
+	fprintf(fp, "    if (argc >= 2 && (strcmp(argv[1], \"--help\") == 0 ||\\n");
+	fprintf(fp, "                      strcmp(argv[1], \"-h\") == 0))\\n");
+	fprintf(fp, "        usage(argv[0]);\\n\\n");
+	fprintf(fp, "    char pledges[4096];\\n");
+	fprintf(fp, "    struct unveil_pair pairs[MAX_UNVEIL];\\n");
+	fprintf(fp, "    int npairs;\\n");
+	fprintf(fp, "    char cmd[4096];\\n");
+	fprintf(fp, "    char args[MAX_ARGS][4096];\\n");
+	fprintf(fp, "    int nargs;\\n");
+	fprintf(fp, "    parse_config(pledges, sizeof(pledges), pairs, MAX_UNVEIL, &npairs,\\n");
+	fprintf(fp, "        cmd, sizeof(cmd), args, &nargs, MAX_ARGS);\\n\\n");
+	fprintf(fp, "    if (!has_word(pledges, \"exec\"))\\n");
+	fprintf(fp, "        errx(1, \"pledges must include 'exec' to run a program\");\\n\\n");
+
 	if (npairs > 0) {
 		for (int i = 0; i < npairs; i++) {
 			c_escape(pairs[i].path, buf, sizeof(buf));
-			fprintf(fp, "    if (unveil(\"%s\", \"%s\") == -1)\n", buf, pairs[i].perms);
-			fprintf(fp, "        err(1, \"unveil(\\\"%%s\\\", \\\"%%s\\\")\", \"%s\", \"%s\");\n",
+			fprintf(fp, "    if (unveil(\"%s\", \"%s\") == -1)\\n", buf, pairs[i].perms);
+			fprintf(fp, "        err(1, \"unveil(\\\"%%s\\\", \\\"%%s\\\")\", \"%s\", \"%s\");\\n",
 			    buf, pairs[i].perms);
 		}
-		fprintf(fp, "    if (unveil(NULL, NULL) == -1)\n");
-		fprintf(fp, "        err(1, \"unveil(NULL, NULL)\");\n\n");
+		fprintf(fp, "    if (unveil(NULL, NULL) == -1)\\n");
+		fprintf(fp, "        err(1, \"unveil(NULL, NULL)\");\\n\\n");
 	}
 
-	/* pledge */
-	fprintf(fp, "    if (pledge(pledges, pledges) == -1)\n");
-	fprintf(fp, "        err(1, \"pledge(\\\"%%s\\\", \\\"%%s\\\")\", pledges, pledges);\n\n");
-	fprintf(fp, "    if (has_word(pledges, \"stdio\")) {\n");
-	fprintf(fp, "        if (pledge(\"stdio exec\", pledges) == -1)\n");
-	fprintf(fp, "            err(1, \"pledge(\\\"stdio exec\\\", \\\"%%s\\\")\", pledges);\n");
-	fprintf(fp, "    } else {\n");
-	fprintf(fp, "        if (pledge(\"exec\", pledges) == -1)\n");
-	fprintf(fp, "            err(1, \"pledge(\\\"exec\\\", \\\"%%s\\\")\", pledges);\n");
-	fprintf(fp, "    }\n\n");
+	fprintf(fp, "    if (pledge(pledges, pledges) == -1)\\n");
+	fprintf(fp, "        err(1, \"pledge(\\\"%%s\\\", \\\"%%s\\\")\", pledges, pledges);\\n\\n");
+	fprintf(fp, "    if (has_word(pledges, \"stdio\")) {\\n");
+	fprintf(fp, "        if (pledge(\"stdio exec\", pledges) == -1)\\n");
+	fprintf(fp, "            err(1, \"pledge(\\\"stdio exec\\\", \\\"%%s\\\")\", pledges);\\n");
+	fprintf(fp, "    } else {\\n");
+	fprintf(fp, "        if (pledge(\"exec\", pledges) == -1)\\n");
+	fprintf(fp, "            err(1, \"pledge(\\\"exec\\\", \\\"%%s\\\")\", pledges);\\n");
+	fprintf(fp, "    }\\n\\n");
 
-	/* exec */
 	if (cmd_argc > 0) {
 		fprintf(fp, "    char *cmd_argv[] = { ");
 		for (int i = 0; i < cmd_argc; i++) {
 			c_escape(cmd_argv[i], buf, sizeof(buf));
 			fprintf(fp, "\"%s\", ", buf);
 		}
-		fprintf(fp, "NULL };\n");
-		fprintf(fp, "    execvp(cmd_argv[0], cmd_argv);\n");
-		fprintf(fp, "    err(1, \"execvp %%s\", cmd_argv[0]);\n");
+		fprintf(fp, "NULL };\\n");
+		fprintf(fp, "    execvp(cmd_argv[0], cmd_argv);\\n");
+		fprintf(fp, "    err(1, \"execvp %%s\", cmd_argv[0]);\\n");
 	} else {
-		fprintf(fp, "    const char *cmd = getenv(\"EXEC_CMD\");\n");
-		fprintf(fp, "    if (!cmd || cmd[0] == '\\0') cmd = \"/bin/sh\";\n");
-		fprintf(fp, "    execl(cmd, cmd, (char *)NULL);\n");
-		fprintf(fp, "    err(1, \"execl %%s\", cmd);\n");
+		fprintf(fp, "    const char *ecmd = getenv(\"EXEC_CMD\");\\n");
+		fprintf(fp, "    if (!ecmd || ecmd[0] == '\\0') ecmd = \"/bin/sh\";\\n");
+		fprintf(fp, "    execl(ecmd, ecmd, (char *)NULL);\\n");
+		fprintf(fp, "    err(1, \"execl %%s\", ecmd);\\n");
 	}
-	fprintf(fp, "    return 1;\n");
-	fprintf(fp, "}\n");
+	fprintf(fp, "    return 1;\\n");
+	fprintf(fp, "}\\n");
 
 	fclose(fp);
 
-	/*
-	 * Compile using fork/exec instead of system() to prevent injection.
-	 * Use -x c to force C language mode regardless of file suffix.
-	 * Use execlp("cc", ...) which searches PATH for the compiler.
-	 * The caller is responsible for ensuring PATH is trusted.
-	 */
-	/*
-	 * Compile to a temporary output file first, then atomically rename.
-	 * This eliminates the TOCTOU window between access() and creation.
-	 */
+	/* Compile */
 	char out_tmp[4096];
 	snprintf(out_tmp, sizeof(out_tmp), "%s.out.XXXXXX", starter_name);
 	int out_fd = mkstemp(out_tmp);
@@ -880,6 +1151,7 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	}
 
 	printf("Starter created: ./%s\n", starter_name);
+	printf("Run ./%s --modify to edit configuration without recompiling.\n", starter_name);
 }
 
 /* ======================================================================== */
@@ -2094,7 +2366,7 @@ main(int argc, char *argv[])
 	/* --version */
 	if (strcmp(argv[1], "--version") == 0) {
 		printf("exec.c - OpenBSD pledge/unveil launcher\n");
-		printf("Version 1.5 (pledge list: OpenBSD 7.5)\n");
+		printf("Version 1.6 (pledge list: OpenBSD 7.5, with starter --modify)\n");
 		printf("Build: cc -O2 -o exec exec.c -Wall -Wextra\n");
 		return 0;
 	}

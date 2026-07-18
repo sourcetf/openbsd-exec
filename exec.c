@@ -708,7 +708,7 @@ make_starter(const char *starter_name, const char *pledges_raw,
 		err(1, "fdopen");
 	}
 
-	char buf[16384];
+	char buf[131072];
 
 	/* Header */
 	fprintf(fp, "/* Auto-generated starter by exec.c */\\n");
@@ -741,10 +741,10 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	c_escape(pledges, buf, sizeof(buf));
 	fprintf(fp, "    \"P %s\\\\n\"\\n", buf);
 
-	/* Unveil pairs */
+	/* Unveil pairs - use \\t as separator to avoid path/perm ambiguity with spaces */
 	for (int i = 0; i < npairs; i++) {
 		c_escape(pairs[i].path, buf, sizeof(buf));
-		fprintf(fp, "    \"U %s \", \"%s\\\\n\"\\n", buf, pairs[i].perms);
+		fprintf(fp, "    \"U %s\\t%s\\\\n\"\\n", buf, pairs[i].perms);
 	}
 
 	/* Command and args */
@@ -767,7 +767,13 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	/* is_whitespace */
 	fprintf(fp, "static int is_whitespace(char c)\\n");
 	fprintf(fp, "{\\n");
-	fprintf(fp, "    return c == ' ' || c == '\\\\t' || c == '\\\\n' || c == '\\\\r' || c == '\\\\f' || c == '\\\\v';\\n");
+	fprintf(fp, "    return c == ' ' || c == '\\t' || c == '\\n' || c == '\\r' || c == '\\f' || c == '\\v';\\n");
+	fprintf(fp, "}\\n\\n");
+
+	/* is_valid_perm */
+	fprintf(fp, "static int is_valid_perm(char c)\\n");
+	fprintf(fp, "{\\n");
+	fprintf(fp, "    return c == 'r' || c == 'w' || c == 'x' || c == 'c';\\n");
 	fprintf(fp, "}\\n\\n");
 
 	/* has_word */
@@ -778,14 +784,14 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	fprintf(fp, "    if (nlen == 0) return 0;\\n");
 	fprintf(fp, "    while ((p = strstr(p, needle)) != NULL) {\\n");
 	fprintf(fp, "        int left_ok = (p == haystack) || is_whitespace(*(p - 1));\\n");
-	fprintf(fp, "        int right_ok = (p[nlen] == '\\\\0') || is_whitespace(p[nlen]);\\n");
+	fprintf(fp, "        int right_ok = (p[nlen] == '\\0') || is_whitespace(p[nlen]);\\n");
 	fprintf(fp, "        if (left_ok && right_ok) return 1;\\n");
 	fprintf(fp, "        p += nlen;\\n");
 	fprintf(fp, "    }\\n");
 	fprintf(fp, "    return 0;\\n");
 	fprintf(fp, "}\\n\\n");
 
-	/* parse_config */
+	/* parse_config - FIXED: use '\\t' separator for U lines */
 	fprintf(fp, "static void parse_config(char *pledges, size_t plen,\\n");
 	fprintf(fp, "    struct unveil_pair *pairs, int max_pairs, int *npairs,\\n");
 	fprintf(fp, "    char *cmd, size_t cmdlen,\\n");
@@ -798,24 +804,24 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	fprintf(fp, "    p += magic_len;\\n");
 	fprintf(fp, "    *npairs = 0;\\n");
 	fprintf(fp, "    *nargs = 0;\\n");
-	fprintf(fp, "    pledges[0] = '\\\\0';\\n");
-	fprintf(fp, "    cmd[0] = '\\\\0';\\n");
+	fprintf(fp, "    pledges[0] = '\\0';\\n");
+	fprintf(fp, "    cmd[0] = '\\0';\\n");
 	fprintf(fp, "    char line[4096];\\n");
-	fprintf(fp, "    while (*p && *p != '\\\\0') {\\n");
+	fprintf(fp, "    while (*p && *p != '\\0') {\\n");
 	fprintf(fp, "        size_t i = 0;\\n");
-	fprintf(fp, "        while (*p && *p != '\\\\n' && i < sizeof(line) - 1)\\n");
+	fprintf(fp, "        while (*p && *p != '\\n' && i < sizeof(line) - 1)\\n");
 	fprintf(fp, "            line[i++] = *p++;\\n");
-	fprintf(fp, "        line[i] = '\\\\0';\\n");
-	fprintf(fp, "        if (*p == '\\\\n') p++;\\n");
-	fprintf(fp, "        if (line[0] == '\\\\0') continue;\\n");
+	fprintf(fp, "        line[i] = '\\0';\\n");
+	fprintf(fp, "        if (*p == '\\n') p++;\\n");
+	fprintf(fp, "        if (line[0] == '\\0') continue;\\n");
 	fprintf(fp, "        if (line[0] == 'P' && line[1] == ' ') {\\n");
 	fprintf(fp, "            strlcpy(pledges, line + 2, plen);\\n");
 	fprintf(fp, "        } else if (line[0] == 'U' && line[1] == ' ') {\\n");
 	fprintf(fp, "            if (*npairs >= max_pairs) continue;\\n");
 	fprintf(fp, "            char *up = line + 2;\\n");
-	fprintf(fp, "            char *sp = strrchr(up, ' ');\\n");
+	fprintf(fp, "            char *sp = strrchr(up, '\\t');\\n");
 	fprintf(fp, "            if (!sp) continue;\\n");
-	fprintf(fp, "            *sp = '\\\\0';\\n");
+	fprintf(fp, "            *sp = '\\0';\\n");
 	fprintf(fp, "            strlcpy(pairs[*npairs].path, up, sizeof(pairs[0].path));\\n");
 	fprintf(fp, "            strlcpy(pairs[*npairs].perms, sp + 1, sizeof(pairs[0].perms));\\n");
 	fprintf(fp, "            (*npairs)++;\\n");
@@ -829,13 +835,18 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	fprintf(fp, "    }\\n");
 	fprintf(fp, "}\\n\\n");
 
-	/* find_magic */
+	/* find_magic - FIXED: validate following context to avoid false matches */
 	fprintf(fp, "static char *find_magic(const char *buf, size_t len,\\n");
 	fprintf(fp, "    const char *magic, size_t magic_len)\\n");
 	fprintf(fp, "{\\n");
 	fprintf(fp, "    for (size_t i = 0; i + magic_len <= len; i++) {\\n");
-	fprintf(fp, "        if (memcmp(buf + i, magic, magic_len) == 0)\\n");
-	fprintf(fp, "            return (char *)(buf + i);\\n");
+	fprintf(fp, "        if (memcmp(buf + i, magic, magic_len) == 0) {\\n");
+	fprintf(fp, "            if (i + magic_len < len) {\\n");
+	fprintf(fp, "                char c = buf[i + magic_len];\\n");
+	fprintf(fp, "                if (c == 'P' || c == 'U' || c == 'C' || c == 'A' || c == '\\0')\\n");
+	fprintf(fp, "                    return (char *)(buf + i);\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "        }\\n");
 	fprintf(fp, "    }\\n");
 	fprintf(fp, "    return NULL;\\n");
 	fprintf(fp, "}\\n\\n");
@@ -881,7 +892,7 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	fprintf(fp, "    printf(\"Configuration saved. Restart starter to use new settings.\\\\n\");\\n");
 	fprintf(fp, "}\\n\\n");
 
-	/* modify_mode */
+	/* modify_mode - FIXED: no double magic, validation, error messages */
 	fprintf(fp, "static void modify_mode(const char *self)\\n");
 	fprintf(fp, "{\\n");
 	fprintf(fp, "    char pledges[4096];\\n");
@@ -898,8 +909,8 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	fprintf(fp, "    char new_pledges[4096];\\n");
 	fprintf(fp, "    if (fgets(new_pledges, sizeof(new_pledges), stdin)) {\\n");
 	fprintf(fp, "        size_t len = strlen(new_pledges);\\n");
-	fprintf(fp, "        if (len > 0 && new_pledges[len-1] == '\\\\n') new_pledges[len-1] = '\\\\0';\\n");
-	fprintf(fp, "        if (new_pledges[0] != '\\\\0') {\\n");
+	fprintf(fp, "        if (len > 0 && new_pledges[len-1] == '\\n') new_pledges[len-1] = '\\0';\\n");
+	fprintf(fp, "        if (new_pledges[0] != '\\0') {\\n");
 	fprintf(fp, "            for (char *p = new_pledges; *p; p++) if (*p == ',') *p = ' ';\\n");
 	fprintf(fp, "            strlcpy(pledges, new_pledges, sizeof(pledges));\\n");
 	fprintf(fp, "        }\\n");
@@ -912,7 +923,7 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	fprintf(fp, "    char unveil_input[8192];\\n");
 	fprintf(fp, "    if (fgets(unveil_input, sizeof(unveil_input), stdin)) {\\n");
 	fprintf(fp, "        size_t len = strlen(unveil_input);\\n");
-	fprintf(fp, "        if (len > 0 && unveil_input[len-1] == '\\\\n') unveil_input[len-1] = '\\\\0';\\n");
+	fprintf(fp, "        if (len > 0 && unveil_input[len-1] == '\\n') unveil_input[len-1] = '\\0';\\n");
 	fprintf(fp, "        strlcpy(unveil_buf, unveil_input, sizeof(unveil_buf));\\n");
 	fprintf(fp, "    }\\n");
 	fprintf(fp, "    printf(\"\\\\nCurrent command: %%s\\\\n\", cmd[0] ? cmd : \"(not set)\");\\n");
@@ -920,8 +931,8 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	fprintf(fp, "    char new_cmd[4096];\\n");
 	fprintf(fp, "    if (fgets(new_cmd, sizeof(new_cmd), stdin)) {\\n");
 	fprintf(fp, "        size_t len = strlen(new_cmd);\\n");
-	fprintf(fp, "        if (len > 0 && new_cmd[len-1] == '\\\\n') new_cmd[len-1] = '\\\\0';\\n");
-	fprintf(fp, "        if (new_cmd[0] != '\\\\0') strlcpy(cmd, new_cmd, sizeof(cmd));\\n");
+	fprintf(fp, "        if (len > 0 && new_cmd[len-1] == '\\n') new_cmd[len-1] = '\\0';\\n");
+	fprintf(fp, "        if (new_cmd[0] != '\\0') strlcpy(cmd, new_cmd, sizeof(cmd));\\n");
 	fprintf(fp, "    }\\n");
 	fprintf(fp, "    printf(\"\\\\nCurrent args: \");\\n");
 	fprintf(fp, "    for (int i = 0; i < nargs; i++) { if (i > 0) printf(\" \"); printf(\"%%s\", args[i]); }\\n");
@@ -933,18 +944,18 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	fprintf(fp, "    int new_nargs = 0;\\n");
 	fprintf(fp, "    if (fgets(args_line, sizeof(args_line), stdin)) {\\n");
 	fprintf(fp, "        size_t len = strlen(args_line);\\n");
-	fprintf(fp, "        if (len > 0 && args_line[len-1] == '\\\\n') args_line[len-1] = '\\\\0';\\n");
-	fprintf(fp, "        if (args_line[0] != '\\\\0') {\\n");
+	fprintf(fp, "        if (len > 0 && args_line[len-1] == '\\n') args_line[len-1] = '\\0';\\n");
+	fprintf(fp, "        if (args_line[0] != '\\0') {\\n");
 	fprintf(fp, "            char *ap = args_line;\\n");
 	fprintf(fp, "            while (*ap) {\\n");
 	fprintf(fp, "                while (is_whitespace(*ap)) ap++;\\n");
-	fprintf(fp, "                if (*ap == '\\\\0') break;\\n");
+	fprintf(fp, "                if (*ap == '\\0') break;\\n");
 	fprintf(fp, "                char *start = ap;\\n");
 	fprintf(fp, "                while (*ap && !is_whitespace(*ap)) ap++;\\n");
 	fprintf(fp, "                size_t alen = ap - start;\\n");
 	fprintf(fp, "                if (new_nargs < MAX_ARGS && alen < 4096) {\\n");
 	fprintf(fp, "                    memcpy(new_args[new_nargs], start, alen);\\n");
-	fprintf(fp, "                    new_args[new_nargs][alen] = '\\\\0';\\n");
+	fprintf(fp, "                    new_args[new_nargs][alen] = '\\0';\\n");
 	fprintf(fp, "                    new_nargs++;\\n");
 	fprintf(fp, "                }\\n");
 	fprintf(fp, "            }\\n");
@@ -960,37 +971,55 @@ make_starter(const char *starter_name, const char *pledges_raw,
 	fprintf(fp, "        printf(\"Cancelled.\\\\n\");\\n");
 	fprintf(fp, "        return;\\n");
 	fprintf(fp, "    }\\n");
-	fprintf(fp, "    if (unveil_buf[0] != '\\\\0') {\\n");
+	fprintf(fp, "    if (unveil_buf[0] != '\\0') {\\n");
 	fprintf(fp, "        npairs = 0;\\n");
 	fprintf(fp, "        char *p = unveil_buf;\\n");
 	fprintf(fp, "        while (*p) {\\n");
+	fprintf(fp, "            if (npairs >= MAX_UNVEIL) {\\n");
+	fprintf(fp, "                fprintf(stderr, \"warning: too many unveil paths (max %%d)\\\\n\", MAX_UNVEIL);\\n");
+	fprintf(fp, "                break;\\n");
+	fprintf(fp, "            }\\n");
 	fprintf(fp, "            while (*p == ',') p++;\\n");
-	fprintf(fp, "            if (*p == '\\\\0') break;\\n");
+	fprintf(fp, "            if (*p == '\\0') break;\\n");
 	fprintf(fp, "            char *path_start = p;\\n");
 	fprintf(fp, "            char *colon = NULL;\\n");
 	fprintf(fp, "            while (*p && *p != ',') { if (*p == ':') colon = p; p++; }\\n");
-	fprintf(fp, "            if (!colon) { if (*p == ',') p++; continue; }\\n");
+	fprintf(fp, "            if (!colon) {\\n");
+	fprintf(fp, "                fprintf(stderr, \"warning: unveil entry '%%.*s' missing ':perms', skipped\\\\n\",\\n");
+	fprintf(fp, "                    (int)(p - path_start), path_start);\\n");
+	fprintf(fp, "                continue;\\n");
+	fprintf(fp, "            }\\n");
 	fprintf(fp, "            size_t path_len = colon - path_start;\\n");
-	fprintf(fp, "            if (path_len == 0 || path_len >= sizeof(pairs[0].path))\\n");
-	fprintf(fp, "                { if (*p == ',') p++; continue; }\\n");
-	fprintf(fp, "            size_t perm_len = (*p == ',') ? (p - colon - 1) : (p - colon - 1);\\n");
-	fprintf(fp, "            if (perm_len == 0 || perm_len >= sizeof(pairs[0].perms))\\n");
-	fprintf(fp, "                { if (*p == ',') p++; continue; }\\n");
+	fprintf(fp, "            if (path_len == 0 || path_len >= sizeof(pairs[0].path)) {\\n");
+	fprintf(fp, "                fprintf(stderr, \"warning: unveil path too long or empty, skipped\\\\n\");\\n");
+	fprintf(fp, "                continue;\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "            size_t perm_len = p - colon - 1;\\n");
+	fprintf(fp, "            if (perm_len == 0 || perm_len >= sizeof(pairs[0].perms)) {\\n");
+	fprintf(fp, "                fprintf(stderr, \"warning: unveil permissions empty or too long, skipped\\\\n\");\\n");
+	fprintf(fp, "                continue;\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "            int valid_perms = 1;\\n");
+	fprintf(fp, "            for (size_t k = 0; k < perm_len; k++) {\\n");
+	fprintf(fp, "                if (!is_valid_perm(colon[1 + k])) {\\n");
+	fprintf(fp, "                    fprintf(stderr, \"warning: invalid perm '%%c', skipped\\\\n\", colon[1 + k]);\\n");
+	fprintf(fp, "                    valid_perms = 0; break;\\n");
+	fprintf(fp, "                }\\n");
+	fprintf(fp, "            }\\n");
+	fprintf(fp, "            if (!valid_perms) continue;\\n");
 	fprintf(fp, "            memcpy(pairs[npairs].path, path_start, path_len);\\n");
-	fprintf(fp, "            pairs[npairs].path[path_len] = '\\\\0';\\n");
+	fprintf(fp, "            pairs[npairs].path[path_len] = '\\0';\\n");
 	fprintf(fp, "            memcpy(pairs[npairs].perms, colon + 1, perm_len);\\n");
-	fprintf(fp, "            pairs[npairs].perms[perm_len] = '\\\\0';\\n");
+	fprintf(fp, "            pairs[npairs].perms[perm_len] = '\\0';\\n");
 	fprintf(fp, "            npairs++;\\n");
-	fprintf(fp, "            if (*p == ',') p++;\\n");
 	fprintf(fp, "        }\\n");
 	fprintf(fp, "    }\\n");
 	fprintf(fp, "    char new_cfg[CFG_SIZE];\\n");
 	fprintf(fp, "    int pos = 0;\\n");
-	fprintf(fp, "    pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos, \"%%s\", CFG_MAGIC);\\n");
 	fprintf(fp, "    pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos, \"P %%s\\\\n\", pledges);\\n");
 	fprintf(fp, "    for (int i = 0; i < npairs; i++)\\n");
 	fprintf(fp, "        pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos,\\n");
-	fprintf(fp, "            \"U %%s %%s\\\\n\", pairs[i].path, pairs[i].perms);\\n");
+	fprintf(fp, "            \"U %%s\\t%%s\\\\n\", pairs[i].path, pairs[i].perms);\\n");
 	fprintf(fp, "    pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos, \"C %%s\\\\n\", cmd);\\n");
 	fprintf(fp, "    for (int i = 0; i < nargs; i++)\\n");
 	fprintf(fp, "        pos += snprintf(new_cfg + pos, sizeof(new_cfg) - pos, \"A %%s\\\\n\", args[i]);\\n");
@@ -1065,7 +1094,7 @@ make_starter(const char *starter_name, const char *pledges_raw,
 		fprintf(fp, "    err(1, \"execvp %%s\", cmd_argv[0]);\\n");
 	} else {
 		fprintf(fp, "    const char *ecmd = getenv(\"EXEC_CMD\");\\n");
-		fprintf(fp, "    if (!ecmd || ecmd[0] == '\\\\0') ecmd = \"/bin/sh\";\\n");
+		fprintf(fp, "    if (!ecmd || ecmd[0] == '\\0') ecmd = \"/bin/sh\";\\n");
 		fprintf(fp, "    execl(ecmd, ecmd, (char *)NULL);\\n");
 		fprintf(fp, "    err(1, \"execl %%s\", ecmd);\\n");
 	}
@@ -1226,7 +1255,7 @@ enable_raw_mode(void)
 static int
 read_key(void)
 {
-	unsigned char c;
+	unsigned char c;   // ← 改为 unsigned，范围 0–255
 	int nread;
 	while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
 		if (nread == 0)
